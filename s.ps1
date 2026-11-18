@@ -3,7 +3,7 @@ param([switch]$Background)
 # ================= SETTINGS =================
 # Path to your text file. Put it next to this script as "lines.txt"
 # or set an absolute path here, e.g. "C:\Users\dmitry\Documents\text.txt"
-$SourceFile = Join-Path $PSScriptRoot "lines.txt"
+$SourceFile = Join-Path $PSScriptRoot "services.txt"
 $StateFile  = "$env:TEMP\paste_state.txt"
 $LogFile    = "$env:USERPROFILE\hotkey_error.log"
 # ============================================
