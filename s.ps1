@@ -132,7 +132,7 @@ $handler = {
     Set-Content -Path $StateFile -Value $global:Sync.Index -Encoding ASCII
 }
 
-$failed = [HotKeys]::Register("QASZX")
+$failed = [HotKeys]::Register("XASZQ")
 if ($failed.Trim()) { Write-Log ("RegisterHotKey failed for: " + $failed) }
 
 [HotKeys]::Listen($global:Sync, $handler)
