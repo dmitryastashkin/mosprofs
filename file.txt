@@ -1,0 +1,245 @@
+import tkinter as tk, csv, os, random, threading, time, math, queue
+from datetime import datetime
+import pyttsx3
+import queue
+engine = pyttsx3.init()
+voice_queue = queue.Queue()
+def speak(t):
+    voice_queue.put(t)
+def voice_worker():
+    while True:
+        t = voice_queue.get()
+        if t is None:
+            break
+        engine.say(t)
+        engine.runAndWait()
+        voice_queue.task_done()
+threading.Thread(target=voice_worker, daemon=True).start()
+engine = pyttsx3.init()
+OP = "operators.csv"
+def init_db():
+    if not os.path.exists(OP):
+        with open(OP, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(["id","ln","fn","pn","age","date"])
+def next_id():
+    if not os.path.exists(OP): return 1
+    with open(OP, "r", encoding="utf-8") as f:
+        ids = [int(r["id"]) for r in csv.DictReader(f) if r["id"].strip()]
+    return max(ids)+1 if ids else 1
+def reg(ln, fn, pn, age):
+    nid = next_id()
+    with open(OP, "a", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow([nid, ln, fn, pn, age, datetime.now().strftime("%Y-%m-%d %H:%M")])
+    return nid
+def find_op(oid):
+    if not os.path.exists(OP): return None
+    with open(OP, "r", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            if r["id"] == str(oid): return r
+    return None
+def mk_sess(oid):
+    n = f"session_{oid}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+    with open(n, "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow(["ts","l","r","ev","p1","p2"])
+    return n
+def log(sf, l, r, ev, p1="", p2=""):
+    with open(sf, "a", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow([datetime.now().strftime("%H:%M:%S"), l, r, ev, p1, p2])
+def norm(v, mn, mx):
+    if mx <= mn: return 0
+    return max(0, min(100, (v-mn)/(mx-mn)*100))
+class Sim:
+    def __init__(self): self.l=0; self.r=0; self.run=False; self.t=0
+    def start(self):
+        self.run=True; threading.Thread(target=self._loop, daemon=True).start()
+    def _loop(self):
+        while self.run:
+            self.t+=0.05; w=math.sin(self.t*2)*300
+            self.l=int(512+w+random.randint(-30,30)); self.r=int(512-w+random.randint(-30,30))
+            self.l=max(0,min(1023,self.l)); self.r=max(0,min(1023,self.r)); time.sleep(0.05)
+    def stop(self): self.run=False
+    def get(self): return self.l, self.r
+class Calib:
+    def __init__(self, par, sim, sf, done):
+        self.sim=sim; self.sf=sf; self.done=done
+        self.mn_r=1023; self.mx_r=0; self.mn_l=1023; self.mx_l=0
+        self.hand=None; self.tl=30
+        self.w=tk.Toplevel(par); self.w.title("Калибровка"); self.w.geometry("500x450")
+        self.c=tk.Canvas(self.w, width=400, height=300, bg="white"); self.c.pack(pady=10)
+        self.ball=self.c.create_oval(100,50,300,250, fill="blue")
+        self.st=tk.Label(self.w, text="Нажми 'Начать'", font=("Arial",14)); self.st.pack()
+        self.pct=tk.Label(self.w, text="0%", font=("Arial",20,"bold")); self.pct.pack()
+        fr=tk.Frame(self.w); fr.pack(pady=10)
+        self.bs=tk.Button(fr, text="Начать", command=self._start); self.bs.pack(side="left", padx=10)
+        self.bn=tk.Button(fr, text="Далее", state="disabled", command=self._fin); self.bn.pack(side="left", padx=10)
+        self._loop()
+    def _start(self):
+        self.bs.config(state="disabled"); self.mn_r=1023; self.mx_r=0; self.mn_l=1023; self.mx_l=0
+        self.hand="right"; self.tl=30
+        speak("Начинаем калибровку правой руки. Сжимайте и расслабляйте руку 30 секунд.")
+        threading.Thread(target=self._timer, daemon=True).start()
+    def _timer(self):
+        while self.tl>0:
+            l,r=self.sim.get()
+            if self.hand=="right": self.mn_r=min(self.mn_r,r); self.mx_r=max(self.mx_r,r)
+            else: self.mn_l=min(self.mn_l,l); self.mx_l=max(self.mx_l,l)
+            time.sleep(1); self.tl-=1
+        self._stage()
+    def _stage(self):
+        if self.hand=="right":
+            log(self.sf,0,0,"calib_r",f"min={self.mn_r}",f"max={self.mx_r}")
+            if self.mx_r-self.mn_r<20: speak("Сигнал слабый, но мы учли это.")
+            else: speak("Отлично! Калибровка правой руки завершена.")
+            self.hand="left"; self.tl=30
+            speak("Теперь калибровка левой руки. 30 секунд.")
+            threading.Thread(target=self._timer, daemon=True).start()
+        else:
+            log(self.sf,0,0,"calib_l",f"min={self.mn_l}",f"max={self.mx_l}")
+            speak("Калибровка обеих рук завершена. Вы молодец!")
+            self.bn.config(state="normal"); self.st.config(text="Калибровка завершена! Нажми 'Далее'")
+    def _loop(self):
+        l,r=self.sim.get()
+        cur=r if self.hand=="right" else (l if self.hand=="left" else 0)
+        mn,mx=(self.mn_r,self.mx_r) if self.hand=="right" else ((self.mn_l,self.mx_l) if self.hand=="left" else (0,1023))
+        p=norm(cur,mn,mx); self.pct.config(text=f"{int(p)}%")
+        rad=int(100-(p/100)*80); self.c.coords(self.ball,200-rad,150-rad,200+rad,150+rad)
+        if self.hand and self.tl>0:
+            h="правой" if self.hand=="right" else "левой"
+            self.st.config(text=f"Калибровка {h} руки. Осталось: {self.tl} сек")
+        self.w.after(50, self._loop)
+    def _fin(self):
+        self.w.destroy()
+        self.done({"mn_r":self.mn_r,"mx_r":self.mx_r,"mn_l":self.mn_l,"mx_l":self.mx_l})
+class Apples:
+    def __init__(self, par, sim, th, sf, exit):
+        self.sim=sim; self.th=th; self.sf=sf; self.exit=exit
+        self.sc=0; self.tgt=10; self.bx=250; self.by=420; self.bw=80; self.run=True
+        self.w=tk.Toplevel(par); self.w.title("Яблоки"); self.w.geometry("600x500")
+        self.c=tk.Canvas(self.w, width=600, height=400, bg="lightblue"); self.c.pack()
+        self.bsk=self.c.create_rectangle(self.bx,self.by,self.bx+self.bw,self.by+30, fill="brown")
+        self.sl=tk.Label(self.w, text=f"Поймано: 0/{self.tgt}", font=("Arial",14)); self.sl.pack()
+        tk.Button(self.w, text="Выход", command=self._exit).pack()
+        self._spawn(); speak("Режим Собери яблоки. Левая рука — влево, правая — вправо. Поймайте 10 яблок!")
+        self._loop()
+    def _spawn(self):
+        self.ax=random.randint(20,570); self.ay=0
+        if hasattr(self,"apl"): self.c.delete(self.apl)
+        self.apl=self.c.create_oval(self.ax,self.ay,self.ax+30,self.ay+30, fill="red")
+    def _loop(self):
+        if not self.run: return
+        l,r=self.sim.get()
+        lp=norm(l,self.th["mn_l"],self.th["mx_l"]); rp=norm(r,self.th["mn_r"],self.th["mx_r"])
+        if lp>15 and rp<=15: self.bx=max(0,self.bx-10)
+        elif rp>15 and lp<=15: self.bx=min(600-self.bw,self.bx+10)
+        self.c.coords(self.bsk,self.bx,self.by,self.bx+self.bw,self.by+30)
+        self.ay+=5; self.c.coords(self.apl,self.ax,self.ay,self.ax+30,self.ay+30)
+        if self.ay>=400: self._spawn()
+        elif self.bx<=self.ax+15<=self.bx+self.bw and self.by<=self.ay+15<=self.by+30: self._catch(lp,rp)
+        self.w.after(33, self._loop)
+    def _catch(self, lp, rp):
+        self.sc+=1; self.sl.config(text=f"Поймано: {self.sc}/{self.tgt}")
+        log(self.sf,int(lp),int(rp),"caught",self.sc,self.sc)
+        threading.Thread(target=speak, args=(random.choice(["Молодец!","Отлично!","Так держать!"]),), daemon=True).start()
+        self._spawn()
+        if self.sc>=self.tgt:
+            self.run=False; speak("Поздравляю! Вы поймали 10 яблок. Реабилитация успешна!")
+    def _exit(self): self.run=False; self.w.destroy(); self.exit()
+class Punch:
+    def __init__(self, par, sim, th, sf, exit):
+        self.sim=sim; self.th=th; self.sf=sf; self.exit=exit
+        self.lh=0; self.rh=0; self.mh=5; self.sc=0
+        self.lt=random.randint(20,80); self.rt=random.randint(20,80)
+        self.ll=0; self.lr=0; self.run=True
+        self.w=tk.Toplevel(par); self.w.title("Удар"); self.w.geometry("700x500")
+        self.c=tk.Canvas(self.w, width=700, height=300, bg="lightyellow"); self.c.pack()
+        self.lp=self.c.create_oval(100,100,250,250, fill="red")
+        self.rp=self.c.create_oval(450,100,600,250, fill="red")
+        self.tl=tk.Label(self.w, text=f"Левая цель: {self.lt}%  |  Правая цель: {self.rt}%", font=("Arial",14)); self.tl.pack()
+        self.hl=tk.Label(self.w, text=f"Левая: 0/5  |  Правая: 0/5  |  Счёт: 0", font=("Arial",14)); self.hl.pack()
+        tk.Button(self.w, text="Выход", command=self._exit).pack()
+        speak("Режим Сила удара. Бейте по грушам с нужной силой. 5 ударов каждой рукой.")
+        self._loop()
+    def _loop(self):
+        if not self.run: return
+        l,r=self.sim.get()
+        lp=norm(l,self.th["mn_l"],self.th["mx_l"]); rp=norm(r,self.th["mn_r"],self.th["mx_r"])
+        now=time.time()
+        if lp>15 and self.lh<self.mh and now-self.ll>1.0: self._hit("l",lp,now)
+        if rp>15 and self.rh<self.mh and now-self.lr>1.0: self._hit("r",rp,now)
+        self.hl.config(text=f"Левая: {self.lh}/5  |  Правая: {self.rh}/5  |  Счёт: {self.sc}")
+        if self.lh>=self.mh and self.rh>=self.mh:
+            self.run=False; speak(f"Режим завершён. Ваш счёт — {self.sc} очков."); return
+        self.w.after(33, self._loop)
+    def _hit(self, h, f, now):
+        if h=="l":
+            self.lh+=1; self.ll=now; e=abs(f-self.lt); p=max(0,int(100-e))
+            self.sc+=p; log(self.sf,int(f),0,"punch_l",self.lt,p)
+            speak("Левый удар"); self.lt=random.randint(20,80)
+        else:
+            self.rh+=1; self.lr=now; e=abs(f-self.rt); p=max(0,int(100-e))
+            self.sc+=p; log(self.sf,0,int(f),"punch_r",self.rt,p)
+            speak("Правый удар"); self.rt=random.randint(20,80)
+    def _exit(self): self.run=False; self.w.destroy(); self.exit()
+class App:
+    def __init__(self):
+        init_db(); self.root=tk.Tk(); self.root.title("Нейрореабилитация"); self.root.geometry("500x400")
+        self.sim=Sim(); self.sim.start(); self.op=None; self.sf=None; self.th=None
+        self._menu()
+    def _menu(self):
+        for w in self.root.winfo_children(): w.destroy()
+        tk.Label(self.root, text="Нейрореабилитация", font=("Arial",20,"bold")).pack(pady=30)
+        tk.Button(self.root, text="Регистрация", font=("Arial",14), width=20, command=self._reg).pack(pady=10)
+        tk.Button(self.root, text="Авторизация", font=("Arial",14), width=20, command=self._login).pack(pady=10)
+        tk.Button(self.root, text="Выход", font=("Arial",12), width=20, command=self._exit).pack(pady=20)
+    def _reg(self):
+        for w in self.root.winfo_children(): w.destroy()
+        tk.Label(self.root, text="Регистрация", font=("Arial",18)).pack(pady=10)
+        for t in ["Фамилия:","Имя:","Отчество (необязательно):","Возраст (14-100):"]:
+            tk.Label(self.root, text=t).pack()
+        self.e1=tk.Entry(self.root, width=30); self.e1.pack()
+        self.e2=tk.Entry(self.root, width=30); self.e2.pack()
+        self.e3=tk.Entry(self.root, width=30); self.e3.pack()
+        self.e4=tk.Entry(self.root, width=30); self.e4.pack()
+        tk.Button(self.root, text="Зарегистрировать", command=self._do_reg).pack(pady=15)
+        tk.Button(self.root, text="Назад", command=self._menu).pack()
+    def _do_reg(self):
+        ln=self.e1.get().strip(); fn=self.e2.get().strip(); pn=self.e3.get().strip(); ag=self.e4.get().strip()
+        if not ln or not fn or not ag: speak("Заполните фамилию, имя, возраст."); return
+        try:
+            age=int(ag)
+            if age<14 or age>100: raise ValueError
+        except: speak("Возраст должен быть числом от 14 до 100."); return
+        nid=reg(ln,fn,pn,age); speak("Регистрация успешна")
+        for w in self.root.winfo_children(): w.destroy()
+        tk.Label(self.root, text=f"Ваш ID: {nid}", font=("Arial",20,"bold"), fg="green").pack(pady=50)
+        tk.Label(self.root, text="Запомните его!").pack()
+        tk.Button(self.root, text="В меню", command=self._menu).pack(pady=20)
+    def _login(self):
+        for w in self.root.winfo_children(): w.destroy()
+        tk.Label(self.root, text="Авторизация", font=("Arial",18)).pack(pady=20)
+        tk.Label(self.root, text="Введите ID:").pack()
+        self.eid=tk.Entry(self.root, width=20, font=("Arial",14)); self.eid.pack()
+        tk.Button(self.root, text="Войти", command=self._do_login).pack(pady=15)
+        tk.Button(self.root, text="Назад", command=self._menu).pack()
+    def _do_login(self):
+        oid=self.eid.get().strip()
+        if not oid.isdigit(): speak("Оператор не найден, повторите ввод."); return
+        op=find_op(oid)
+        if op is None: speak("Оператор не найден, повторите ввод."); return
+        self.op=op; self.sf=mk_sess(oid)
+        speak(f"Приветствую вас в программе реабилитации, {op['firstname']}!")
+        self.root.withdraw(); Calib(self.root, self.sim, self.sf, done=self._on_calib)
+    def _on_calib(self, th):
+        self.th=th; self.root.deiconify(); self._games()
+    def _games(self):
+        for w in self.root.winfo_children(): w.destroy()
+        tk.Label(self.root, text="Выберите режим", font=("Arial",20,"bold")).pack(pady=30)
+        tk.Button(self.root, text="Режим 1: Собери яблоки", font=("Arial",14), width=25, command=self._apples).pack(pady=10)
+        tk.Button(self.root, text="Режим 2: Сила удара", font=("Arial",14), width=25, command=self._punch).pack(pady=10)
+        tk.Button(self.root, text="Выход", font=("Arial",12), width=25, command=self._exit).pack(pady=20)
+    def _apples(self): self.root.withdraw(); Apples(self.root, self.sim, self.th, self.sf, exit=self._back)
+    def _punch(self): self.root.withdraw(); Punch(self.root, self.sim, self.th, self.sf, exit=self._back)
+    def _back(self): self.root.deiconify(); self._games()
+    def _exit(self): self.sim.stop(); self.root.destroy()
+    def run(self): self.root.mainloop()
+if __name__ == "__main__": App().run()
